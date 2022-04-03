@@ -28,6 +28,26 @@ _emoji_resolver: EmojiResolver = None
 # TODO: would be nice to bundle it into an .exe but it seems pyinstaller is not able to do it yet
 
 
+
+async def channel_messages(channel: discord.GroupChannel, to_edit: discord.Message, days) -> list:
+	date_after = datetime.now()-timedelta(days=days)
+	messages = []
+	await to_edit.edit(content=f"> Reading {channel.mention} ")
+	# for every message in the channel up to a limit
+	async for message in tqdm_asyncio(
+		channel.history(limit=MAX_MESSAGES, after=date_after), desc=channel.name,
+		total=MAX_MESSAGES, ncols=140, file=sys.stdout, leave=False
+	):
+		if not message.author.bot:
+			messages.append((message.author.id, message.content))
+		for reaction in message.reactions:
+			reaction_str = str(reaction.emoji)
+			async for user in reaction.users():
+				messages.append((user.id, reaction_str))
+	return messages
+        
+
+
 async def server_messages(server: discord.Guild, to_edit: discord.Message, days) -> list:
 	date_after = datetime.now()-timedelta(days=days)
 	messages = []
@@ -69,6 +89,7 @@ async def on_ready():
 	global _emoji_resolver
 	_emoji_resolver = EmojiResolver(bot)
 	await _emoji_resolver.load_server_emojis()
+        
 	print("Ready")
 
 
@@ -95,6 +116,29 @@ async def load(ctx, days=None):
 	status = await ctx.channel.send("**. . .**")
 	server = ctx.message.channel.guild
 	messages = await server_messages(server, to_edit, days)
+	# we save messages for fast reloading
+	with open(f"save_{server.id}.json", "w") as fmessages:
+		json.dump(messages, fmessages)
+	await add_server(server, messages)
+	await status.edit(content="Done !")
+
+@bot.command(name="loadchannel", brief=f"Reads the messages of this channel up to x days (cap at {MAX_MESSAGES} per channel)")
+@guild_only()
+@has_permissions(manage_channels=True)
+async def loadchannel(ctx, days=None):
+	if days is None:
+		days = DEFAULT_DAYS
+	else:
+		try:
+			days = int(days)
+		except ValueError:
+			await ctx.channel.send(f"`{days}` is not an integer, defaulting to {DEFAULT_DAYS}")
+			days = DEFAULT_DAYS
+	await ctx.channel.send(f"Loading messages up to {days} days")
+	to_edit = await ctx.channel.send(".")
+	status = await ctx.channel.send("**. . .**")
+	channel = ctx.message.channel
+	messages = await channel_messages(channel, to_edit, days)
 	# we save messages for fast reloading
 	with open(f"save_{server.id}.json", "w") as fmessages:
 		json.dump(messages, fmessages)
@@ -181,6 +225,21 @@ async def cloud(ctx, *args):
 				content=f"{member.mention}'s Word Cloud:", allowed_mentions=discord.AllowedMentions.none(),
 				file=discord.File(fp=image, filename=f"{member.display_name}_word_cloud.png")
 			)
+
+
+@bot.command(name="channelcloud", brief="Creates a workcloud everything loaded")
+@guild_only()
+async def channelcloud(ctx, *args):
+        server: discord.Guild = ctx.channel.guide
+	if server not in _models:
+		await ctx.channel.send(
+			"Word Clouds are not ready for this server yet, either call `;load` if you haven't already or wait for it to finish."
+		)
+		return
+        async with ctx.channel.typing():
+                wc = _models[server].word_
+                
+
 
 
 @cloud.error
